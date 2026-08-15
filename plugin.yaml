@@ -1,0 +1,16 @@
+schema: mcpg.dev/plugin/v1
+id: dev.mcpg.tool-gate.field-crypto
+name: Field-Level Crypto Gate
+license: BUSL-1.1
+description: |
+  A ToolGate that encrypts named argument fields pre-dispatch and decrypts named
+  result fields post-dispatch with XChaCha20-Poly1305. Each field is sealed into
+  a self-describing string envelope (mcpgfc1:base64url(nonce||ciphertext)) bound
+  to its JSON Pointer path as AAD, so a ciphertext cannot be moved between
+  fields. The 32-byte key comes from operator config (populate via ${env.X}).
+  Pure compute, no network. Fails closed on bad config; a configured result
+  field that fails to decrypt is denied (configurable).
+class: tool_gate
+runtime: native-cdylib-v1
+protocol_version: "1.0"
+required_capabilities: []
