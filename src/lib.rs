@@ -12,11 +12,11 @@
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
-use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
+use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use mcpg_glob::glob_match;
 use mcpg_plugin_protocol::{GateDecision, PluginContext, PluginManifest, firstparty_manifest};
 use mcpg_plugin_sdk::ffi::SyncToolGate;
-use rand::{RngCore, rngs::OsRng};
+use rand::{TryRng, rngs::SysRng};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -101,7 +101,8 @@ impl FieldCryptoPlugin {
                 "tool-gate-field-crypto: at least one of encrypt_fields / decrypt_fields is required"
             );
         }
-        let cipher = XChaCha20Poly1305::new(Key::from_slice(&key_bytes));
+        let cipher =
+            XChaCha20Poly1305::new_from_slice(&key_bytes).expect("key length checked above");
 
         Self {
             manifest: firstparty_manifest! {
@@ -137,12 +138,14 @@ impl FieldCryptoPlugin {
     /// (the field path) so the ciphertext can't be relocated to another field.
     fn seal(&self, plaintext: &str, aad: &[u8]) -> Result<String, String> {
         let mut nonce_bytes = [0u8; NONCE_BYTES];
-        OsRng.fill_bytes(&mut nonce_bytes);
-        let nonce = XNonce::from_slice(&nonce_bytes);
+        SysRng
+            .try_fill_bytes(&mut nonce_bytes)
+            .map_err(|_| "OS randomness unavailable".to_owned())?;
+        let nonce = XNonce::from(nonce_bytes);
         let ct = self
             .cipher
             .encrypt(
-                nonce,
+                &nonce,
                 Payload {
                     msg: plaintext.as_bytes(),
                     aad,
@@ -163,14 +166,13 @@ impl FieldCryptoPlugin {
         let raw = B64URL
             .decode(b64.as_bytes())
             .map_err(|_| "invalid base64".to_owned())?;
-        if raw.len() < NONCE_BYTES {
+        let Some((nonce_bytes, ct)) = raw.split_first_chunk::<NONCE_BYTES>() else {
             return Err("envelope too short".to_owned());
-        }
-        let (nonce_bytes, ct) = raw.split_at(NONCE_BYTES);
-        let nonce = XNonce::from_slice(nonce_bytes);
+        };
+        let nonce = XNonce::from(*nonce_bytes);
         let pt = self
             .cipher
-            .decrypt(nonce, Payload { msg: ct, aad })
+            .decrypt(&nonce, Payload { msg: ct, aad })
             .map_err(|_| "authentication failed".to_owned())?;
         String::from_utf8(pt).map_err(|_| "decrypted value is not UTF-8".to_owned())
     }
